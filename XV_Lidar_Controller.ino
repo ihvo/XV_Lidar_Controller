@@ -1,5 +1,6 @@
 /*
   XV Lidar Controller v1.4.0
+  Adapted for Adafruit Feather M0 with Motor Shield
 
   Copyright 2014-2016 James LeRoy getSurreal
   https://github.com/getSurreal/XV_Lidar_Controller
@@ -13,15 +14,16 @@
   The F() macro in the Serial statements tells the compiler to keep your strings in PROGMEM
 */
 
+#include <Adafruit_MotorShield.h>
+#include <FlashStorage.h>
 #include <PID.h>
 #include <SerialCommand.h>
-#include <Adafruit_MotorShield.h>
 
 const int N_ANGLES = 360;                // # of angles (0..359)
 const int SHOW_ALL_ANGLES = N_ANGLES;    // value means 'display all angle data, 0..359'
 
-struct ControllerConfig {
-  byte id;
+struct XV_Config {
+  bool valid;
   char version[6];
   int motor_port;            // Motor shield port number that has motor connected
   double rpm_setpoint;          // desired RPM (uses double to be compatible with PID library)
@@ -43,10 +45,7 @@ struct ControllerConfig {
   boolean show_interval;       // true = show time interval, once per revolution, at angle=0
   boolean show_errors;         // Show CRC, signal strength and invalid data errors
   boolean aryAngles[N_ANGLES]; // array of angles to display
-}
-xv_config;
-
-const byte MAGIC_VALUE = 0x42;   // used to validate EEPROM initialized
+} xv_config;
 
 double pwm_val = 100;          // start with ~50% power
 double pwm_last;
@@ -128,10 +127,12 @@ Adafruit_DCMotor *motor;
 boolean ledState = LOW;
 const int ledPin = 13;
 
+FlashStorage(configStore, XV_Config);
+
 // initialization (before 'loop')
 void setup() {
-  // EEPROM_readAnything(0, xv_config);
-  if ( xv_config.id != MAGIC_VALUE) { // verify EEPROM values have been initialized
+  xv_config = configStore.read();
+  if (!xv_config.valid) { // verify config values have previously been stored
     initConfig();
   }
  
@@ -145,6 +146,15 @@ void setup() {
   rpmPID.SetSampleTime(xv_config.sample_time);
   rpmPID.SetTunings(xv_config.Kp, xv_config.Ki, xv_config.Kd);
   rpmPID.SetMode(AUTOMATIC);
+
+  if (xv_config.motor_enable)
+  {
+    motor->run(FORWARD);
+  }
+  else
+  {
+    motor->run(RELEASE);
+  }
 
   initSerialCommands();
   pinMode(ledPin, OUTPUT);
@@ -392,10 +402,10 @@ byte eValidatePacket() {
    initConfig
 */
 void initConfig() {
-  xv_config.id = MAGIC_VALUE;
   strcpy(xv_config.version, "1.4.0");
+  xv_config.valid = true;
   xv_config.motor_port = 3;
-  xv_config.rpm_setpoint = 200;  // desired RPM
+  xv_config.rpm_setpoint = 200;  // default RPM
   xv_config.rpm_min = 200;
   xv_config.rpm_max = 300;
   xv_config.pwm_min = 0;
@@ -413,7 +423,6 @@ void initConfig() {
   xv_config.show_errors = false;
   for (int ix = 0; ix < N_ANGLES; ix++)
     xv_config.aryAngles[ix] = true;
-  // EEPROM_writeAnything(0, xv_config);
 }
 /*
    initSerialCommands
@@ -988,6 +997,6 @@ void showConfig() {
 }
 
 void saveConfig() {
-  // EEPROM_writeAnything(0, xv_config);
-  Serial.println(F("Config not saved."));
+  configStore.write(xv_config);
+  Serial.println(F("Config saved."));
 }
