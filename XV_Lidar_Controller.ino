@@ -12,19 +12,18 @@
 
   The F() macro in the Serial statements tells the compiler to keep your strings in PROGMEM
 */
-#include <TimerThree.h>                   // used for ultrasonic PWM motor control
+
 #include <PID.h>
-#include <EEPROM.h>
-#include <EEPROMAnything.h>
 #include <SerialCommand.h>
+#include <Adafruit_MotorShield.h>
 
 const int N_ANGLES = 360;                // # of angles (0..359)
 const int SHOW_ALL_ANGLES = N_ANGLES;    // value means 'display all angle data, 0..359'
 
-struct EEPROM_Config {
+struct ControllerConfig {
   byte id;
   char version[6];
-  int motor_pwm_pin;            // pin connected to mosfet for motor speed control
+  int motor_port;            // Motor shield port number that has motor connected
   double rpm_setpoint;          // desired RPM (uses double to be compatible with PID library)
   double rpm_min;
   double rpm_max;
@@ -47,9 +46,9 @@ struct EEPROM_Config {
 }
 xv_config;
 
-const byte EEPROM_ID = 0x07;   // used to validate EEPROM initialized
+const byte MAGIC_VALUE = 0x42;   // used to validate EEPROM initialized
 
-double pwm_val = 500;          // start with ~50% power
+double pwm_val = 100;          // start with ~50% power
 double pwm_last;
 double motor_rpm;
 unsigned long now;
@@ -122,38 +121,25 @@ uint16_t startingAngle = 0;                      // the first scan angle (of gro
 
 SerialCommand sCmd;
 
+Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
+// And connect a DC motor to port M1
+Adafruit_DCMotor *motor;
+
 boolean ledState = LOW;
-
-#if defined(__AVR_ATmega32U4__) && defined(CORE_TEENSY)  // if Teensy 2.0
-const int ledPin = 11;
-
-#elif defined(__AVR_ATmega32U4__)  // if Leonardo (no LED for Pro Micro)
 const int ledPin = 13;
-
-#elif defined(__MK20DX256__)  // if Teensy 3.1
-const int ledPin = 13;
-
-#elif defined(__MKL26Z64__)  // if Teensy LC
-const int ledPin = 13;
-#endif
 
 // initialization (before 'loop')
 void setup() {
-  EEPROM_readAnything(0, xv_config);
-  if ( xv_config.id != EEPROM_ID) { // verify EEPROM values have been initialized
-    initEEPROM();
+  // EEPROM_readAnything(0, xv_config);
+  if ( xv_config.id != MAGIC_VALUE) { // verify EEPROM values have been initialized
+    initConfig();
   }
-  pinMode(xv_config.motor_pwm_pin, OUTPUT);
-  Serial.begin(115200);                    // USB serial
-#if defined(__AVR_ATmega32U4__)
-  Serial1.begin(115200);                   // XV LDS data
-#elif defined(__MK20DX256__)               // if Teensy 3.1
-  Serial1.begin(115200);                   // XV LDS data
-#elif defined(__MKL26Z64__)                // if Teensy LC
-  Serial1.begin(115200);                   // XV LDS data
-#endif
+ 
+  motor = AFMS.getMotor(xv_config.motor_port);
 
-  Timer3.initialize(30);                           // set PWM frequency to 32.768kHz
+  AFMS.begin();
+  Serial.begin(115200);                    // USB serial
+  Serial1.begin(115200);                   // XV LDS data
 
   rpmPID.SetOutputLimits(xv_config.pwm_min, xv_config.pwm_max);
   rpmPID.SetSampleTime(xv_config.sample_time);
@@ -243,10 +229,11 @@ void loop() {
       }  // if (ixPacket == PACKET_LENGTH)
     }  // if (eState == eState_Find_COMMAND)
   }  // if (Serial1.available() > 0)
+    
   if (xv_config.motor_enable) {
     rpmPID.Compute();
     if (pwm_val != pwm_last) {
-      Timer3.pwm(xv_config.motor_pwm_pin, pwm_val);  // replacement for analogWrite()
+      motor->setSpeed(pwm_val);
       pwm_last = pwm_val;
     }
     motorCheck();
@@ -402,30 +389,17 @@ byte eValidatePacket() {
 }
 
 /*
-   initEEPROM
+   initConfig
 */
-void initEEPROM() {
-  xv_config.id = 0x07;
+void initConfig() {
+  xv_config.id = MAGIC_VALUE;
   strcpy(xv_config.version, "1.4.0");
-
-#if defined(__AVR_ATmega32U4__) && defined(CORE_TEENSY)  // if Teensy 2.0
-  xv_config.motor_pwm_pin = 9;  // pin connected N-Channel Mosfet
-
-#elif defined(__AVR_ATmega32U4__)  // if Leonardo or Pro Micro
-  xv_config.motor_pwm_pin = 5;  // pin connected N-Channel Mosfet
-
-#elif defined(__MK20DX256__)  // if Teensy 3.1
-  xv_config.motor_pwm_pin = 33;  // pin connected N-Channel Mosfet
-
-#elif defined(__MKL26Z64__)  // if Teensy LC
-  xv_config.motor_pwm_pin = 4;  // pin connected N-Channel Mosfet
-#endif
-
+  xv_config.motor_port = 3;
   xv_config.rpm_setpoint = 200;  // desired RPM
   xv_config.rpm_min = 200;
   xv_config.rpm_max = 300;
-  xv_config.pwm_min = 100;
-  xv_config.pwm_max = 1023;
+  xv_config.pwm_min = 0;
+  xv_config.pwm_max = 255;
   xv_config.sample_time = 20;
   xv_config.Kp = 2.0;
   xv_config.Ki = 1.0;
@@ -439,8 +413,7 @@ void initEEPROM() {
   xv_config.show_errors = false;
   for (int ix = 0; ix < N_ANGLES; ix++)
     xv_config.aryAngles[ix] = true;
-
-  EEPROM_writeAnything(0, xv_config);
+  // EEPROM_writeAnything(0, xv_config);
 }
 /*
    initSerialCommands
@@ -450,7 +423,7 @@ void initSerialCommands() {
   sCmd.addCommand("Help",        help);
   sCmd.addCommand("ShowConfig",  showConfig);
   sCmd.addCommand("SaveConfig",  saveConfig);
-  sCmd.addCommand("ResetConfig", initEEPROM);
+  sCmd.addCommand("ResetConfig", initConfig);
 
   sCmd.addCommand("SetAngle",      setAngle);
   sCmd.addCommand("SetRPM",        setRPM);
@@ -683,14 +656,14 @@ void setAngle() {
 
 void motorOff() {
   xv_config.motor_enable = false;
-  Timer3.pwm(xv_config.motor_pwm_pin, 0);
+  motor->run(RELEASE);
   Serial.println(F(" "));
   Serial.println(F("Motor off"));
 }
 
 void motorOn() {
   xv_config.motor_enable = true;
-  Timer3.pwm(xv_config.motor_pwm_pin, pwm_val);
+  motor->run(FORWARD);
   rpm_err = 0;  // reset rpm error
   Serial.println(F(" "));
   Serial.println(F("Motor on"));
@@ -973,8 +946,8 @@ void showConfig() {
   Serial.println(F(" "));
   Serial.println(F(" "));
 
-  Serial.print(F("PWM pin: "));
-  Serial.println(xv_config.motor_pwm_pin);
+  Serial.print(F("Motor port: "));
+  Serial.println(xv_config.motor_port);
 
   Serial.print(F("Target RPM: "));
   Serial.println(xv_config.rpm_setpoint);
@@ -1015,7 +988,6 @@ void showConfig() {
 }
 
 void saveConfig() {
-  EEPROM_writeAnything(0, xv_config);
-  Serial.println(F("Config Saved."));
+  // EEPROM_writeAnything(0, xv_config);
+  Serial.println(F("Config not saved."));
 }
-
